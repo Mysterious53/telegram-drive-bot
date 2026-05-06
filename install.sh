@@ -10,7 +10,12 @@
 #  به‌روزرسانی:
 #    sudo bash /opt/telegram-drive-bot/install.sh
 # ============================================================
-set -euo pipefail
+#
+# نکته: عمداً از set -e استفاده نمی‌کنیم — pipefail + grep/crontab
+# در محیط‌های مختلف کدهای خروجی متفاوت برمی‌گردانند و باعث خروج
+# زودهنگام اسکریپت می‌شوند. خطاها را صریح بررسی می‌کنیم.
+#
+set -uo pipefail
 
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
 CYAN='\033[0;36m'; BOLD='\033[1m'; NC='\033[0m'
@@ -37,68 +42,82 @@ echo ""
 
 # ── تضمین دسترسی به ترمینال — حتی در curl | bash ─────────────
 # وقتی اسکریپت از پایپ اجرا می‌شه stdin = لوله curl نه ترمینال
-# با باز کردن /dev/tty روی fd 3 مشکل حل می‌شه
 if [[ -t 0 ]]; then
-    exec 3<&0                   # stdin خودش ترمینال است
+    exec 3<&0
 elif [[ -e /dev/tty ]]; then
-    exec 3</dev/tty             # /dev/tty را برای ورودی کاربر باز می‌کنیم
+    exec 3</dev/tty
 else
-    die "ترمینال تعاملی یافت نشد.\nاسکریپت را مستقیماً اجرا کنید: sudo bash install.sh"
+    die "ترمینال تعاملی یافت نشد. اسکریپت را مستقیماً اجرا کنید: sudo bash install.sh"
 fi
 
 # ── شناسایی توزیع ────────────────────────────────────────────
-[[ -f /etc/os-release ]] && . /etc/os-release || die "توزیع شناخته نشد."
+if [[ -f /etc/os-release ]]; then
+    . /etc/os-release
+else
+    die "توزیع شناخته نشد."
+fi
 info "سیستم‌عامل: ${PRETTY_NAME:-$ID}"
 
 # ── تابع نصب پکیج ───────────────────────────────────────────
 pkg_install() {
   case "${ID:-}" in
-    ubuntu|debian) apt-get install -y -qq "$@" 2>/dev/null ;;
+    ubuntu|debian)
+      apt-get install -y -qq "$@" >/dev/null 2>&1 || \
+        apt-get install -y "$@" ;;
     centos|rhel|rocky|almalinux|fedora)
-      command -v dnf &>/dev/null && dnf install -y "$@" 2>/dev/null \
-                                 || yum install -y "$@" 2>/dev/null ;;
-    arch) pacman -Sy --noconfirm "$@" 2>/dev/null ;;
-    *) warn "توزیع ناشناخته — پکیج‌ها را دستی نصب کنید."; return 0 ;;
+      if command -v dnf &>/dev/null; then
+        dnf install -y "$@" >/dev/null 2>&1 || dnf install -y "$@"
+      else
+        yum install -y "$@" >/dev/null 2>&1 || yum install -y "$@"
+      fi ;;
+    arch)
+      pacman -Sy --noconfirm "$@" >/dev/null 2>&1 || pacman -Sy --noconfirm "$@" ;;
+    *)
+      warn "توزیع ناشناخته — پکیج‌ها را دستی نصب کنید."
+      return 0 ;;
   esac
 }
 
-# ── به‌روزرسانی امن فایل .env (بدون sed و مشکل کاراکتر خاص) ──
+# ── به‌روزرسانی امن فایل .env (بدون sed — از مشکل کاراکتر خاص جلوگیری می‌کند) ──
 _env_set() {
-  local key="$1" val="$2"
-  local tmp; tmp=$(mktemp)
-  grep -v "^${key}=" "$ENV" 2>/dev/null > "$tmp" || true
-  echo "${key}=${val}" >> "$tmp"
-  mv "$tmp" "$ENV"
+  local key="$1" val="$2" tmp
+  tmp=$(mktemp) || die "نمی‌توان فایل موقت ساخت."
+  grep -v "^${key}=" "${ENV}" > "${tmp}" 2>/dev/null || true
+  echo "${key}=${val}" >> "${tmp}"
+  mv "${tmp}" "${ENV}"
 }
 
 # ── پیش‌نیازهای پایه ─────────────────────────────────────────
 info "نصب پیش‌نیازها..."
-case "${ID:-}" in ubuntu|debian) apt-get update -qq ;; esac
-pkg_install python3 python3-pip python3-venv git curl openssl
+case "${ID:-}" in ubuntu|debian) apt-get update -qq >/dev/null 2>&1 || true ;; esac
+pkg_install python3 python3-pip python3-venv git curl openssl || \
+  die "نصب پیش‌نیازها شکست خورد."
 success "پیش‌نیازها نصب شد."
 
 # ── بررسی Python 3.10+ ───────────────────────────────────────
-PY=$(command -v python3 || die "Python یافت نشد.")
-$PY -c "import sys; sys.exit(0 if sys.version_info>=(3,10) else 1)" \
-  || die "Python 3.10+ لازم است. نسخه فعلی: $($PY --version)"
+PY=$(command -v python3) || die "Python یافت نشد."
+if ! "$PY" -c "import sys; sys.exit(0 if sys.version_info>=(3,10) else 1)" 2>/dev/null; then
+  die "Python 3.10+ لازم است. نسخه فعلی: $($PY --version)"
+fi
 success "Python: $($PY --version)"
 
 # ── Clone / آپدیت کد ─────────────────────────────────────────
 if [[ -d "$INSTALL_DIR/.git" ]]; then
   info "به‌روزرسانی کد در $INSTALL_DIR ..."
-  git -C "$INSTALL_DIR" pull --ff-only
+  git -C "$INSTALL_DIR" pull --ff-only || die "آپدیت کد شکست خورد."
 else
   info "دریافت کد از GitHub..."
-  git clone --depth 1 "$REPO_URL" "$INSTALL_DIR"
+  git clone --depth 1 "$REPO_URL" "$INSTALL_DIR" || die "دانلود کد شکست خورد."
 fi
 success "کد آماده است."
 
 # ── محیط مجازی + وابستگی‌ها ──────────────────────────────────
 VENV="$INSTALL_DIR/venv"
 info "ساخت محیط مجازی Python..."
-"$PY" -m venv "$VENV"
-"$VENV/bin/pip" install --upgrade pip -q
-"$VENV/bin/pip" install -r "$INSTALL_DIR/requirements.txt" -q
+"$PY" -m venv "$VENV" || die "ساخت venv شکست خورد."
+"$VENV/bin/pip" install --upgrade pip -q || true
+"$VENV/bin/pip" install -r "$INSTALL_DIR/requirements.txt" -q || \
+  die "نصب وابستگی‌های Python شکست خورد."
 success "وابستگی‌های Python نصب شد."
 
 # ── فایل .env ─────────────────────────────────────────────────
@@ -126,16 +145,17 @@ if grep -q "your_telegram_bot_token_here" "$ENV" 2>/dev/null; then
   [[ -n "$CHANNELS" ]] && _env_set "REQUIRED_CHANNELS" "$CHANNELS"
 fi
 
-# ── کلید رمزنگاری — در هر صورت بررسی و ایجاد می‌شود ──────────
+# ── کلید رمزنگاری ────────────────────────────────────────────
 if grep -q "your_fernet_key_here" "$ENV" 2>/dev/null; then
   ENC_KEY=$("$VENV/bin/python3" -c \
-    "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())")
+    "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())") || \
+    die "تولید کلید رمزنگاری شکست خورد."
   _env_set "ENCRYPTION_KEY" "$ENC_KEY"
   success "کلید رمزنگاری ایجاد شد."
 fi
 
 # ══════════════════════════════════════════════════════════════
-#  دامنه — همیشه می‌پرسیم (با پیش‌فرض دامنه فعلی برای به‌روزرسانی)
+#  دامنه — همیشه می‌پرسیم
 # ══════════════════════════════════════════════════════════════
 DOMAIN=""
 _current_domain=$(grep "^WEBHOOK_URL=https://" "$ENV" 2>/dev/null \
@@ -168,16 +188,23 @@ info "دامنه: $DOMAIN"
 # ══════════════════════════════════════════════════════════════
 info "نصب Nginx و Certbot..."
 case "${ID:-}" in
-  ubuntu|debian) pkg_install nginx certbot python3-certbot-nginx ;;
-  centos|rhel|rocky|almalinux|fedora) pkg_install epel-release nginx certbot python3-certbot-nginx ;;
-  arch) pkg_install nginx certbot certbot-nginx ;;
+  ubuntu|debian)
+    pkg_install nginx certbot python3-certbot-nginx || die "نصب Nginx/Certbot شکست خورد." ;;
+  centos|rhel|rocky|almalinux|fedora)
+    pkg_install epel-release nginx certbot python3-certbot-nginx || \
+      die "نصب Nginx/Certbot شکست خورد." ;;
+  arch)
+    pkg_install nginx certbot certbot-nginx || die "نصب Nginx/Certbot شکست خورد." ;;
 esac
-systemctl enable --now nginx
+
+systemctl enable nginx >/dev/null 2>&1 || true
+systemctl start nginx  >/dev/null 2>&1 || true
+systemctl reload nginx >/dev/null 2>&1 || true
 success "Nginx راه‌اندازی شد."
 
 rm -f /etc/nginx/sites-enabled/default 2>/dev/null || true
 
-# ── تعیین مسیر کانفیگ Nginx (Debian/Ubuntu vs RHEL/CentOS) ───
+# ── تعیین مسیر کانفیگ Nginx ──────────────────────────────────
 if [[ -d /etc/nginx/sites-available ]]; then
   NGINX_CONF="/etc/nginx/sites-available/${SERVICE}"
   NGINX_LINK="/etc/nginx/sites-enabled/${SERVICE}"
@@ -186,7 +213,7 @@ else
   NGINX_LINK=""
 fi
 
-# ── کانفیگ HTTP موقت برای تأیید Let's Encrypt ────────────────
+# ── کانفیگ HTTP موقت برای ACME ───────────────────────────────
 cat > "$NGINX_CONF" <<NGINXEOF
 server {
     listen 80;
@@ -198,10 +225,11 @@ server {
 }
 NGINXEOF
 
-[[ -n "$NGINX_LINK" ]] && ln -sf "$NGINX_CONF" "$NGINX_LINK"
-nginx -t && systemctl reload nginx
+[[ -n "$NGINX_LINK" ]] && ln -sf "$NGINX_CONF" "$NGINX_LINK" 2>/dev/null || true
+nginx -t >/dev/null 2>&1 && systemctl reload nginx || \
+  die "کانفیگ Nginx معتبر نیست."
 
-# ── گواهی SSL با Let's Encrypt ────────────────────────────────
+# ── گواهی SSL ────────────────────────────────────────────────
 info "دریافت گواهی SSL برای $DOMAIN ..."
 certbot certonly \
   --nginx \
@@ -209,10 +237,10 @@ certbot certonly \
   --non-interactive \
   --agree-tos \
   --email "admin@${DOMAIN}" \
-  2>&1 || die "SSL شکست خورد.\n  ← مطمئن شوید DNS دامنه «${DOMAIN}» به IP این سرور اشاره دارد.\n  ← پورت 80 باید باز باشد."
+  2>&1 || die "دریافت SSL شکست خورد.\n  ← DNS دامنه «${DOMAIN}» باید به IP این سرور اشاره کند.\n  ← پورت 80 باید باز باشد."
 success "گواهی SSL دریافت شد."
 
-# ── کانفیگ HTTPS کامل Nginx ──────────────────────────────────
+# ── کانفیگ HTTPS کامل ────────────────────────────────────────
 cat > "$NGINX_CONF" <<NGINXEOF
 server {
     listen 80;
@@ -233,8 +261,6 @@ server {
     ssl_prefer_server_ciphers off;
     ssl_session_cache   shared:SSL:10m;
     ssl_session_timeout 1d;
-    ssl_stapling        on;
-    ssl_stapling_verify on;
     add_header Strict-Transport-Security "max-age=63072000; includeSubDomains" always;
     add_header X-Frame-Options DENY always;
     add_header X-Content-Type-Options nosniff always;
@@ -254,7 +280,8 @@ server {
 }
 NGINXEOF
 
-nginx -t && systemctl reload nginx
+nginx -t >/dev/null 2>&1 && systemctl reload nginx || \
+  die "کانفیگ HTTPS Nginx معتبر نیست."
 success "Nginx با HTTPS پیکربندی شد."
 
 # ── به‌روزرسانی .env ──────────────────────────────────────────
@@ -266,13 +293,26 @@ _env_set "SERVER_HOST"        "127.0.0.1"
 success ".env با تنظیمات دامنه به‌روز شد."
 
 # ── تمدید خودکار SSL ─────────────────────────────────────────
-if systemctl list-timers --all 2>/dev/null | grep -q certbot; then
+# certbot.timer را چک می‌کنیم — اگر نبود، cron می‌گذاریم
+_certbot_timer_active=0
+systemctl list-timers --all 2>/dev/null | grep -q "certbot" && _certbot_timer_active=1 || true
+
+if [[ $_certbot_timer_active -eq 1 ]]; then
   success "تمدید خودکار SSL فعال است (certbot.timer)."
 else
-  (crontab -l 2>/dev/null; echo "0 3 * * * certbot renew --quiet && systemctl reload nginx") \
-    | sort -u | crontab -
-  success "تمدید SSL از طریق cron تنظیم شد."
+  # crontab -l ممکن است exit code 1 برگرداند وقتی crontab خالی است
+  # پس آن را جدا اجرا می‌کنیم و نتیجه را ذخیره می‌کنیم
+  _existing_cron=$(crontab -l 2>/dev/null || true)
+  _new_entry="0 3 * * * certbot renew --quiet && systemctl reload nginx"
+  if echo "$_existing_cron" | grep -qF "certbot renew" 2>/dev/null; then
+    success "تمدید SSL از طریق cron قبلاً تنظیم شده."
+  else
+    printf "%s\n%s\n" "$_existing_cron" "$_new_entry" | crontab - 2>/dev/null || \
+      warn "تنظیم cron برای تمدید SSL شکست خورد — دستی اضافه کنید."
+    success "تمدید SSL از طریق cron تنظیم شد."
+  fi
 fi
+
 mkdir -p /etc/letsencrypt/renewal-hooks/deploy
 cat > /etc/letsencrypt/renewal-hooks/deploy/nginx-reload.sh <<'HOOKEOF'
 #!/bin/bash
@@ -283,11 +323,18 @@ chmod +x /etc/letsencrypt/renewal-hooks/deploy/nginx-reload.sh
 # ══════════════════════════════════════════════════════════════
 #  کاربر سیستمی + سرویس systemd
 # ══════════════════════════════════════════════════════════════
-NOLOGIN=$(command -v nologin 2>/dev/null || echo /sbin/nologin)
-id "$BOT_USER" &>/dev/null || \
-  useradd --system --no-create-home --shell "$NOLOGIN" "$BOT_USER"
-chown -R "$BOT_USER:$BOT_USER" "$INSTALL_DIR"
-chmod 600 "$ENV"
+NOLOGIN=$(command -v nologin 2>/dev/null || true)
+[[ -z "$NOLOGIN" ]] && NOLOGIN=/usr/sbin/nologin
+[[ -x "$NOLOGIN" ]] || NOLOGIN=/sbin/nologin
+
+if ! id "$BOT_USER" &>/dev/null; then
+  useradd --system --no-create-home --shell "$NOLOGIN" "$BOT_USER" || \
+    warn "ساخت کاربر $BOT_USER شکست خورد — احتمالاً از قبل وجود دارد."
+fi
+
+chown -R "$BOT_USER:$BOT_USER" "$INSTALL_DIR" || \
+  warn "تغییر مالکیت شکست خورد."
+chmod 600 "$ENV" || true
 
 cat > "/etc/systemd/system/${SERVICE}.service" <<SVCEOF
 [Unit]
@@ -310,29 +357,27 @@ StandardError=journal
 WantedBy=multi-user.target
 SVCEOF
 
-systemctl daemon-reload
-systemctl enable "$SERVICE"
+systemctl daemon-reload || die "systemctl daemon-reload شکست خورد."
+systemctl enable "$SERVICE" >/dev/null 2>&1 || true
 success "سرویس systemd ثبت شد."
 
 # ══════════════════════════════════════════════════════════════
 #  راه‌اندازی + ثبت Webhook
 # ══════════════════════════════════════════════════════════════
-TG_TOKEN_LIVE=$(grep "^TELEGRAM_BOT_TOKEN=" "$ENV" | cut -d'=' -f2- || true)
+TG_TOKEN_LIVE=$(grep "^TELEGRAM_BOT_TOKEN=" "$ENV" 2>/dev/null | cut -d'=' -f2- || true)
 
 if [[ -z "$TG_TOKEN_LIVE" ]] || \
-   echo "$TG_TOKEN_LIVE" | grep -q "your_telegram_bot_token_here"; then
+   echo "$TG_TOKEN_LIVE" | grep -q "your_telegram_bot_token_here" 2>/dev/null; then
   warn "Telegram Token هنوز تنظیم نشده — سرویس شروع نمی‌شود."
   warn "  → sudo nano $ENV"
   warn "  → sudo systemctl start $SERVICE"
 else
-  systemctl restart "$SERVICE"
+  systemctl restart "$SERVICE" || warn "ری‌استارت سرویس شکست خورد."
   info "سرویس ربات راه‌اندازی شد — منتظر آماده شدن (حداکثر ۶۰ ثانیه)..."
 
-  # ── صبر می‌کنیم تا ربات واقعاً healthy بشه ───────────────
-  # (setWebhook نیاز داره ربات بالا باشه تا Telegram بتونه تست کنه)
   READY=0
   for _i in $(seq 1 30); do
-    if curl -sf --connect-timeout 2 "http://127.0.0.1:8080/health" > /dev/null 2>&1; then
+    if curl -sf --connect-timeout 2 "http://127.0.0.1:8080/health" >/dev/null 2>&1; then
       READY=1
       break
     fi
@@ -344,7 +389,6 @@ else
   if [[ $READY -eq 1 ]]; then
     success "ربات فعال و پاسخگوست ✓"
 
-    # ── ثبت Webhook پس از تأیید آماده بودن ربات ───────────
     info "ثبت Webhook در تلگرام..."
     WH_RESULT=$(curl -sf --connect-timeout 15 \
       "https://api.telegram.org/bot${TG_TOKEN_LIVE}/setWebhook" \
@@ -352,20 +396,21 @@ else
       --data-urlencode "secret_token=${WH_SECRET}" \
       -d "drop_pending_updates=true" \
       -d 'allowed_updates=["message","callback_query","chat_member"]' \
-      2>&1 || echo '{"ok":false,"description":"curl timeout"}')
+      2>&1 || echo '{"ok":false,"description":"curl error"}')
 
-    if echo "$WH_RESULT" | grep -q '"ok":true'; then
+    if echo "$WH_RESULT" | grep -q '"ok":true' 2>/dev/null; then
       success "Webhook تلگرام ثبت شد ✓"
     else
       warn "ثبت webhook: $WH_RESULT"
-      warn "برای ثبت دستی اجرا کنید:"
-      warn "  curl -s 'https://api.telegram.org/bot${TG_TOKEN_LIVE}/setWebhook?url=https://${DOMAIN}/webhook/${TG_TOKEN_LIVE}'"
+      warn "برای ثبت دستی:"
+      warn "  curl -s 'https://api.telegram.org/bot${TG_TOKEN_LIVE}/setWebhook' \\"
+      warn "    --data-urlencode 'url=https://${DOMAIN}/webhook/${TG_TOKEN_LIVE}'"
     fi
   else
-    warn "ربات در ۶۰ ثانیه آماده نشد — بررسی لاگ:"
-    warn "  sudo journalctl -u $SERVICE -n 50 --no-pager"
+    warn "ربات در ۶۰ ثانیه آماده نشد. لاگ:"
+    warn "  sudo journalctl -u $SERVICE -n 30 --no-pager"
     warn ""
-    warn "پس از رفع مشکل، webhook را دستی ثبت کنید:"
+    warn "پس از راه‌اندازی ربات، webhook را دستی ثبت کنید:"
     warn "  curl -s 'https://api.telegram.org/bot${TG_TOKEN_LIVE}/setWebhook?url=https://${DOMAIN}/webhook/${TG_TOKEN_LIVE}'"
   fi
 fi

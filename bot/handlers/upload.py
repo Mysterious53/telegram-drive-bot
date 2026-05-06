@@ -9,10 +9,11 @@ from telegram import Update
 from telegram.ext import ContextTypes
 
 import database.db as db
-from bot.keyboards import main_menu, cancel_and_menu, connect_drive
+from bot.keyboards import main_menu, cancel_and_menu, connect_drive, quality_kb
 from bot.states import IDLE, WAIT_URL, WAIT_FILE
 from bot.rate_limiter import limiter
 from services.auth import get_auth_url, has_oauth_config
+from services.drive import get_youtube_info, is_youtube_url
 from services.queue import UploadTask, QueueFullError
 from config import DAILY_UPLOAD_LIMIT, MAX_FILE_SIZE_MB
 
@@ -141,6 +142,36 @@ async def handle_url_message(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return
 
     context.user_data["state"] = IDLE
+    url = urls[0]
+
+    # ── YouTube: show quality selector ───────────────────────
+    if is_youtube_url(url):
+        msg = await update.message.reply_text("🔍 در حال دریافت اطلاعات ویدیو...")
+        try:
+            info = await get_youtube_info(url)
+        except Exception as e:
+            await msg.edit_text(
+                f"❌ خطا در دریافت اطلاعات ویدیو:\n{e}",
+                reply_markup=main_menu(),
+            )
+            return
+
+        # Store pending data server-side (user_data is per-user in-memory)
+        context.user_data["yt_url"] = url
+        context.user_data["yt_qualities"] = info["qualities"]
+        context.user_data["yt_tokens"] = tokens
+
+        title = info["title"][:60] + ("..." if len(info["title"]) > 60 else "")
+        await msg.edit_text(
+            f"🎬 ویدیو یافت شد!\n\n"
+            f"📌 {title}\n"
+            f"⏱ مدت: {info['duration']}\n\n"
+            "کیفیت دانلود را انتخاب کنید:",
+            reply_markup=quality_kb(info["qualities"]),
+        )
+        return
+
+    # ── Regular link: enqueue directly ───────────────────────
     queue = context.application.bot_data["upload_queue"]
     status_msg = await update.message.reply_text("⏳ در حال افزودن به صف آپلود...")
 
@@ -149,7 +180,7 @@ async def handle_url_message(update: Update, context: ContextTypes.DEFAULT_TYPE)
         chat_id=update.effective_chat.id,
         status_msg_id=status_msg.message_id,
         upload_type="link",
-        source=urls[0],
+        source=url,
         tokens=tokens,
     )
 
@@ -165,6 +196,68 @@ async def handle_url_message(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await status_msg.edit_text(
             "⚠️ سرور در حال حاضر پر است.\n"
             "لطفاً چند دقیقه دیگر امتحان کنید.",
+        )
+
+
+async def quality_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """User selected a YouTube quality from the inline keyboard."""
+    query = update.callback_query
+    await query.answer()
+
+    qualities: list | None = context.user_data.get("yt_qualities")
+    url: str | None = context.user_data.get("yt_url")
+    tokens: dict | None = context.user_data.get("yt_tokens")
+
+    if not qualities or not url or not tokens:
+        await query.edit_message_text(
+            "❌ اطلاعات منقضی شده. لطفاً لینک را دوباره ارسال کنید.",
+            reply_markup=main_menu(),
+        )
+        return
+
+    try:
+        idx = int(query.data.split(":")[1])
+    except (IndexError, ValueError):
+        await query.answer("❌ کیفیت نامعتبر", show_alert=True)
+        return
+
+    if idx < 0 or idx >= len(qualities):
+        await query.answer("❌ کیفیت نامعتبر", show_alert=True)
+        return
+
+    selected = qualities[idx]
+
+    # Clear pending data
+    context.user_data.pop("yt_qualities", None)
+    context.user_data.pop("yt_url", None)
+    context.user_data.pop("yt_tokens", None)
+
+    if not await _guard(update, context):
+        return
+
+    queue = context.application.bot_data["upload_queue"]
+    await query.edit_message_text(f"⏳ در حال افزودن به صف...\nکیفیت: {selected['label']}")
+
+    task = UploadTask(
+        user_id=update.effective_user.id,
+        chat_id=update.effective_chat.id,
+        status_msg_id=query.message.message_id,
+        upload_type="link",
+        source=url,
+        tokens=tokens,
+        yt_format=selected["format"],
+    )
+
+    try:
+        pos = await queue.enqueue(task)
+        if pos > 1:
+            await query.edit_message_text(
+                f"📋 در صف آپلود هستید.\nموقعیت: {pos}\nکیفیت: {selected['label']}",
+            )
+    except QueueFullError:
+        await query.edit_message_text(
+            "⚠️ سرور پر است. چند دقیقه دیگر امتحان کنید.",
+            reply_markup=main_menu(),
         )
 
 

@@ -15,6 +15,8 @@ from services.drive import (
     download_url, download_telegram_file, download_youtube, upload_file,
     is_youtube_url, FileTooLargeError, UploadCancelled,
 )
+
+_DEFAULT_YT_FORMAT = "best[ext=mp4]/bestvideo[ext=mp4]+bestaudio[ext=m4a]/best"
 from config import MAX_CONCURRENT_UPLOADS, MAX_QUEUE_SIZE, DAILY_UPLOAD_LIMIT
 
 logger = logging.getLogger(__name__)
@@ -36,6 +38,7 @@ class UploadTask:
     file_size: int = 0
     tokens: dict = field(default_factory=dict)
     cancelled: bool = False
+    yt_format: str = ""          # yt-dlp format selector (empty = default)
 
 
 class QueueFullError(Exception):
@@ -143,8 +146,10 @@ class UploadQueue:
             if task.upload_type == "link":
                 if is_youtube_url(task.source):
                     await status("⏬ در حال دانلود ویدیو از یوتیوب...", markup=_CANCEL_KB)
+                    fmt = task.yt_format or _DEFAULT_YT_FORMAT
                     tmp_path, filename, mime_type, size = await download_youtube(
                         task.source,
+                        format_str=fmt,
                         progress_cb=lambda d, t: progress(d, t, "⏬ در حال دانلود از یوتیوب..."),
                         cancelled_check=lambda: task.cancelled,
                     )

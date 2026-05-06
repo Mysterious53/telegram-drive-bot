@@ -10,6 +10,7 @@ from .account import account_callback, disconnect_drive_callback
 from .upload import (
     upload_link_callback, upload_file_callback,
     handle_url_message, handle_file_message,
+    quality_callback,
 )
 from .files import files_callback, file_delete_callback
 from .admin import (
@@ -85,6 +86,7 @@ def register(app: Application):
     app.add_handler(CallbackQueryHandler(disconnect_drive_callback,   pattern="^disconnect_drive$"))
     app.add_handler(CallbackQueryHandler(upload_link_callback,        pattern="^upload_link$"))
     app.add_handler(CallbackQueryHandler(upload_file_callback,        pattern="^upload_file$"))
+    app.add_handler(CallbackQueryHandler(quality_callback,            pattern="^yt_q:"))
     app.add_handler(CallbackQueryHandler(files_callback,              pattern="^files:"))
     app.add_handler(CallbackQueryHandler(file_delete_callback,        pattern="^file:del:"))
     app.add_handler(CallbackQueryHandler(admin_callback,              pattern="^admin:"))

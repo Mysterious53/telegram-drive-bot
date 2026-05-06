@@ -139,8 +139,67 @@ async def download_url(
             return Path(tmp.name), filename, mime_type, total
 
 
+async def get_youtube_info(url: str) -> dict:
+    """Fetch video metadata and available quality options without downloading."""
+    try:
+        import yt_dlp
+    except ImportError:
+        raise Exception("yt-dlp نصب نیست.")
+
+    loop = asyncio.get_running_loop()
+    _result: list[dict | None] = [None]
+    _error: list[Exception | None] = [None]
+
+    def _fetch():
+        try:
+            with yt_dlp.YoutubeDL({"quiet": True, "no_warnings": True, "noplaylist": True}) as ydl:
+                _result[0] = ydl.extract_info(url, download=False)
+        except Exception as exc:
+            _error[0] = exc
+
+    await loop.run_in_executor(None, _fetch)
+
+    if _error[0]:
+        raise _error[0]
+
+    info = _result[0] or {}
+    formats = info.get("formats", [])
+
+    # Collect unique heights that have a real video stream
+    heights: set[int] = set()
+    for f in formats:
+        h = f.get("height")
+        if h and f.get("vcodec") not in (None, "none"):
+            heights.add(h)
+
+    _label_map = {
+        2160: "4K (2160p)", 1440: "2K (1440p)", 1080: "1080p HD",
+        720: "720p HD", 480: "480p", 360: "360p", 240: "240p", 144: "144p",
+    }
+
+    qualities = []
+    for h in sorted(heights, reverse=True)[:7]:          # max 7 video qualities
+        label = _label_map.get(h, f"{h}p")
+        fmt = (
+            f"bestvideo[height<={h}][ext=mp4]+bestaudio[ext=m4a]"
+            f"/bestvideo[height<={h}]+bestaudio"
+            f"/best[height<={h}]"
+        )
+        qualities.append({"label": label, "format": fmt, "height": h})
+
+    qualities.append({"label": "🎵 فقط صدا", "format": "bestaudio[ext=m4a]/bestaudio", "height": 0})
+
+    dur = info.get("duration", 0) or 0
+    return {
+        "title": info.get("title", "ویدیوی ناشناس"),
+        "duration": f"{dur // 60}:{dur % 60:02d}" if dur else "نامشخص",
+        "qualities": qualities,
+    }
+
+
 async def download_youtube(
     url: str,
+    format_str: str = "best[ext=mp4]/bestvideo[ext=mp4]+bestaudio[ext=m4a]/best",
     progress_cb: Optional[Callable[[int, int], Awaitable[None]]] = None,
     cancelled_check: Optional[Callable[[], bool]] = None,
 ) -> tuple[Path, str, str, int]:
@@ -161,7 +220,7 @@ async def download_youtube(
             _prog[1] = d.get("total_bytes") or d.get("total_bytes_estimate", 0)
 
     ydl_opts = {
-        "format": "best[ext=mp4]/bestvideo[ext=mp4]+bestaudio[ext=m4a]/best",
+        "format": format_str,
         "outtmpl": os.path.join(tmp_dir, "%(title)s.%(ext)s"),
         "merge_output_format": "mp4",
         "progress_hooks": [_hook],

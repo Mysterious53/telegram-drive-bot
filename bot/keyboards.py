@@ -126,6 +126,13 @@ def admin_user_actions(user_id: int, is_blocked: bool) -> Markup:
     ])
 
 
+def quality_kb(qualities: list[dict]) -> Markup:
+    """Inline buttons for YouTube quality selection."""
+    rows = [[Btn(q["label"], callback_data=f"yt_q:{i}")] for i, q in enumerate(qualities)]
+    rows.append([Btn("❌ انصراف", callback_data="main_menu")])
+    return Markup(rows)
+
+
 def connect_drive(auth_url: str) -> Markup:
     return Markup([
         [Btn("🔗 اتصال به گوگل درایو", url=auth_url)],

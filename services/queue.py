@@ -45,11 +45,16 @@ class QueueFullError(Exception):
     pass
 
 
+class AlreadyQueuedError(Exception):
+    pass
+
+
 class UploadQueue:
     def __init__(self):
         self._q: asyncio.Queue[UploadTask] = asyncio.Queue(maxsize=MAX_QUEUE_SIZE)
         self._workers: list[asyncio.Task] = []
         self._uploading: dict[int, UploadTask] = {}
+        self._queued: set[int] = set()      # user_ids waiting in queue (not yet picked)
 
     @property
     def pending(self) -> int:
@@ -71,15 +76,22 @@ class UploadQueue:
             self._workers.append(t)
         logger.info("Upload queue started (%d workers)", MAX_CONCURRENT_UPLOADS)
 
+    def is_queued_or_uploading(self, user_id: int) -> bool:
+        return user_id in self._queued or user_id in self._uploading
+
     async def enqueue(self, task: UploadTask) -> int:
+        if task.user_id in self._queued or task.user_id in self._uploading:
+            raise AlreadyQueuedError()
         if self._q.full():
             raise QueueFullError()
+        self._queued.add(task.user_id)
         await self._q.put(task)
         return self._q.qsize()
 
     async def _worker(self, bot: Bot):
         while True:
             task = await self._q.get()
+            self._queued.discard(task.user_id)
             self._uploading[task.user_id] = task
             try:
                 await self._process(task, bot)

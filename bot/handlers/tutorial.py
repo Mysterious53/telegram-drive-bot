@@ -9,6 +9,11 @@ from telegram.ext import ContextTypes
 import database.db as db
 from bot.keyboards import tutorial_admin_kb, tutorial_list_kb, back_to_menu, cancel_and_menu
 from bot.states import IDLE, ADMIN_TUTORIAL_ADD
+from config import ADMIN_IDS
+
+
+def _is_admin(user_id: int) -> bool:
+    return user_id in ADMIN_IDS
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +60,9 @@ async def tutorial_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def tutorial_admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
+    if not _is_admin(update.effective_user.id):
+        await query.edit_message_text("❌ دسترسی ندارید.")
+        return
 
     count = await db.count_tutorial_media()
     await query.edit_message_text(
@@ -66,6 +74,9 @@ async def tutorial_admin_callback(update: Update, context: ContextTypes.DEFAULT_
 async def tutorial_admin_add_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
+    if not _is_admin(update.effective_user.id):
+        await query.edit_message_text("❌ دسترسی ندارید.")
+        return
 
     context.user_data["state"] = ADMIN_TUTORIAL_ADD
     await query.edit_message_text(
@@ -79,6 +90,9 @@ async def tutorial_admin_add_callback(update: Update, context: ContextTypes.DEFA
 async def tutorial_list_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
+    if not _is_admin(update.effective_user.id):
+        await query.edit_message_text("❌ دسترسی ندارید.")
+        return
 
     items = await db.get_tutorial_media()
     if not items:
@@ -95,6 +109,9 @@ async def tutorial_list_callback(update: Update, context: ContextTypes.DEFAULT_T
 async def tutorial_del_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
+    if not _is_admin(update.effective_user.id):
+        await query.edit_message_text("❌ دسترسی ندارید.")
+        return
 
     item_id = int(query.data.split(":")[-1])
     await db.delete_tutorial_media(item_id)
@@ -113,6 +130,8 @@ async def tutorial_del_callback(update: Update, context: ContextTypes.DEFAULT_TY
 
 async def handle_admin_tutorial_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if context.user_data.get("state") != ADMIN_TUTORIAL_ADD:
+        return
+    if not _is_admin(update.effective_user.id):
         return
 
     msg = update.message

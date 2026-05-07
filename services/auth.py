@@ -74,11 +74,16 @@ async def exchange_code(code: str) -> dict:
     return _to_dict(flow.credentials)
 
 
+_ALLOWED_TOKEN_URI = "https://oauth2.googleapis.com/token"
+
+
 def get_credentials(tokens: dict) -> Credentials:
+    if tokens.get("token_uri") != _ALLOWED_TOKEN_URI:
+        raise ValueError("token_uri نامعتبر است.")
     creds = Credentials(
         token=tokens["token"],
         refresh_token=tokens["refresh_token"],
-        token_uri=tokens["token_uri"],
+        token_uri=_ALLOWED_TOKEN_URI,
         client_id=tokens["client_id"],
         client_secret=tokens["client_secret"],
         scopes=tokens["scopes"],

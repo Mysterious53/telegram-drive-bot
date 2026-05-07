@@ -10,7 +10,7 @@ import tempfile
 import logging
 from pathlib import Path
 from typing import Callable, Awaitable, Optional
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urljoin
 
 import aiohttp
 from googleapiclient.discovery import build
@@ -92,14 +92,42 @@ def is_youtube_url(url: str) -> bool:
     return bool(_YT_RE.search(url))
 
 
+_MAX_REDIRECTS = 5
+
+
+async def _resolve_redirects(url: str) -> str:
+    """Follow redirects while validating each hop for SSRF. Returns final URL."""
+    async with aiohttp.ClientSession() as session:
+        current = url
+        for _ in range(_MAX_REDIRECTS):
+            async with session.get(current, allow_redirects=False) as resp:
+                if resp.status not in (301, 302, 303, 307, 308):
+                    return current
+                location = resp.headers.get("Location", "").strip()
+                if not location:
+                    return current
+                location = urljoin(current, location)
+                await _validate_download_url(location)
+                current = location
+        return current
+
+
+def _safe_filename(raw: str) -> str:
+    """Sanitize a filename to prevent path traversal and invalid characters."""
+    name = os.path.basename(raw.replace("\\", "/"))
+    name = re.sub(r"[^\w\-. ]", "_", name).strip()[:200]
+    return name or "downloaded_file"
+
+
 async def download_url(
     url: str,
     progress_cb: Optional[Callable[[int, int], Awaitable[None]]] = None,
     cancelled_check: Optional[Callable[[], bool]] = None,
 ) -> tuple[Path, str, str, int]:
     await _validate_download_url(url)
+    url = await _resolve_redirects(url)   # validate every redirect hop
     async with aiohttp.ClientSession() as session:
-        async with session.get(url, allow_redirects=True) as resp:
+        async with session.get(url, allow_redirects=False) as resp:
             resp.raise_for_status()
 
             cl = resp.headers.get("Content-Length")
@@ -109,9 +137,10 @@ async def download_url(
             cd = resp.headers.get("Content-Disposition", "")
             filename = None
             if "filename=" in cd:
-                filename = cd.split("filename=")[-1].strip("\"' ")
+                filename = _safe_filename(cd.split("filename=")[-1].strip("\"' "))
             if not filename:
-                filename = str(resp.url).split("?")[0].rstrip("/").split("/")[-1] or "file"
+                raw = str(resp.url).split("?")[0].rstrip("/").split("/")[-1]
+                filename = _safe_filename(raw) if raw else "downloaded_file"
 
             mime_type = resp.headers.get("Content-Type", "application/octet-stream").split(";")[0].strip()
             total_size = int(cl) if cl else 0

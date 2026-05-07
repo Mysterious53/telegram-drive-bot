@@ -14,7 +14,7 @@ from bot.states import IDLE, WAIT_URL, WAIT_FILE
 from bot.rate_limiter import limiter
 from services.auth import get_auth_url, has_oauth_config
 from services.drive import get_youtube_info, is_youtube_url
-from services.queue import UploadTask, QueueFullError
+from services.queue import UploadTask, QueueFullError, AlreadyQueuedError
 from config import DAILY_UPLOAD_LIMIT, MAX_FILE_SIZE_MB
 
 logger = logging.getLogger(__name__)
@@ -192,6 +192,8 @@ async def handle_url_message(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 f"موقعیت شما: {pos}\n"
                 "به محض رسیدن نوبت شروع می‌شود.",
             )
+    except AlreadyQueuedError:
+        await status_msg.edit_text("⚠️ یک آپلود از شما در صف است. لطفاً منتظر بمانید.")
     except QueueFullError:
         await status_msg.edit_text(
             "⚠️ سرور در حال حاضر پر است.\n"
@@ -254,6 +256,8 @@ async def quality_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text(
                 f"📋 در صف آپلود هستید.\nموقعیت: {pos}\nکیفیت: {selected['label']}",
             )
+    except AlreadyQueuedError:
+        await query.edit_message_text("⚠️ یک آپلود از شما در صف است. لطفاً منتظر بمانید.")
     except QueueFullError:
         await query.edit_message_text(
             "⚠️ سرور پر است. چند دقیقه دیگر امتحان کنید.",
@@ -379,6 +383,8 @@ async def handle_file_message(update: Update, context: ContextTypes.DEFAULT_TYPE
             await status_msg.edit_text(
                 f"📋 در صف آپلود هستید.\nموقعیت: {pos}",
             )
+    except AlreadyQueuedError:
+        await status_msg.edit_text("⚠️ یک آپلود از شما در صف است. لطفاً منتظر بمانید.")
     except QueueFullError:
         await status_msg.edit_text(
             "⚠️ سرور در حال حاضر پر است. چند دقیقه دیگر امتحان کنید."

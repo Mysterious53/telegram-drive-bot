@@ -12,6 +12,11 @@ from bot.keyboards import (
     software_admin_platform_kb, back_to_menu, cancel_and_menu,
 )
 from bot.states import IDLE, ADMIN_SW_ADD
+from config import ADMIN_IDS
+
+
+def _is_admin(user_id: int) -> bool:
+    return user_id in ADMIN_IDS
 
 logger = logging.getLogger(__name__)
 
@@ -79,6 +84,9 @@ async def software_list_callback(update: Update, context: ContextTypes.DEFAULT_T
 async def software_admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
+    if not _is_admin(update.effective_user.id):
+        await query.edit_message_text("❌ دسترسی ندارید.")
+        return
     await query.edit_message_text(
         "📥 مدیریت نرم‌افزار\n\nسیستم‌عامل را انتخاب کنید:",
         reply_markup=software_admin_menu_kb(),
@@ -88,6 +96,9 @@ async def software_admin_callback(update: Update, context: ContextTypes.DEFAULT_
 async def software_admin_platform_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
+    if not _is_admin(update.effective_user.id):
+        await query.edit_message_text("❌ دسترسی ندارید.")
+        return
 
     platform = query.data.split(":")[-1]
     pname = _PLATFORM_NAME.get(platform, platform)
@@ -102,6 +113,9 @@ async def software_admin_platform_callback(update: Update, context: ContextTypes
 async def software_admin_add_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
+    if not _is_admin(update.effective_user.id):
+        await query.edit_message_text("❌ دسترسی ندارید.")
+        return
 
     platform = query.data.split(":")[-1]
     pname = _PLATFORM_NAME.get(platform, platform)
@@ -120,6 +134,9 @@ async def software_admin_add_callback(update: Update, context: ContextTypes.DEFA
 async def software_del_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
+    if not _is_admin(update.effective_user.id):
+        await query.edit_message_text("❌ دسترسی ندارید.")
+        return
 
     db_id = int(query.data.split(":")[-1])
     f = await db.get_software_file(db_id)
@@ -142,6 +159,8 @@ async def software_del_callback(update: Update, context: ContextTypes.DEFAULT_TY
 
 async def handle_admin_sw_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if context.user_data.get("state") != ADMIN_SW_ADD:
+        return
+    if not _is_admin(update.effective_user.id):
         return
 
     platform = context.user_data.get("sw_platform", "android")

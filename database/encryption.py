@@ -8,7 +8,15 @@ from config import ENCRYPTION_KEY
 def _cipher() -> Fernet:
     if not ENCRYPTION_KEY:
         raise RuntimeError("ENCRYPTION_KEY در فایل .env تنظیم نشده است.")
-    key = base64.urlsafe_b64encode(hashlib.sha256(ENCRYPTION_KEY.encode()).digest())
+    # اگر key از قبل یک Fernet key معتبر (44 کاراکتر base64-url) باشد، مستقیم استفاده کن.
+    # در غیر این صورت از SHA-256 derive می‌شود (برای سازگاری با نسخه‌های قدیمی).
+    key_bytes = ENCRYPTION_KEY.encode()
+    try:
+        if len(key_bytes) == 44:
+            return Fernet(key_bytes)
+    except Exception:
+        pass
+    key = base64.urlsafe_b64encode(hashlib.sha256(key_bytes).digest())
     return Fernet(key)
 
 

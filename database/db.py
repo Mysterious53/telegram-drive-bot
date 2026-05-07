@@ -301,13 +301,15 @@ async def save_oauth_state(state: str, user_id: int):
 
 
 async def pop_oauth_state(state: str) -> Optional[int]:
-    """Returns user_id and deletes the state atomically."""
+    """Returns user_id and deletes the state atomically (EXCLUSIVE lock to prevent TOCTOU)."""
     async with aiosqlite.connect(DATABASE_PATH) as db:
+        await db.execute("BEGIN EXCLUSIVE")
         async with db.execute(
             "SELECT user_id FROM oauth_states WHERE state=?", (state,)
         ) as cur:
             row = await cur.fetchone()
         if not row:
+            await db.execute("ROLLBACK")
             return None
         await db.execute("DELETE FROM oauth_states WHERE state=?", (state,))
         await db.commit()

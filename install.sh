@@ -339,7 +339,7 @@ fi
 
 chown -R "$BOT_USER:$BOT_USER" "$INSTALL_DIR" || \
   warn "تغییر مالکیت شکست خورد."
-chmod 600 "$ENV" || true
+chmod 600 "$ENV" || warn "⚠️ نمی‌توان .env را محدود کرد — مجوزها را دستی بررسی کنید: chmod 600 $ENV"
 
 cat > "/etc/systemd/system/${SERVICE}.service" <<SVCEOF
 [Unit]

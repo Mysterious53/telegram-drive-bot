@@ -39,7 +39,7 @@
 ## نصب سریع
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/rostami36285-create/telegram-drive-bot/main/install.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/Mysterious53/telegram-drive-bot/main/install.sh | sudo bash
 ```
 
 اسکریپت به‌صورت تعاملی می‌پرسد:

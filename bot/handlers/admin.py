@@ -101,7 +101,7 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # split max 3 parts to handle channel IDs with colons (e.g. numeric)
         channel_id = action.split(":", 2)[2]
         await db.remove_required_channel(channel_id)
-        await _show_channels(query, notice=f"✅ کانال `{channel_id}` حذف شد.")
+        await _show_channels(query, notice=f"✅ کانال <code>{html.escape(channel_id)}</code> حذف شد.")
 
     elif action == "admin:oauth":
         await _show_oauth_settings(query)
@@ -169,19 +169,19 @@ async def _show_channels(query, notice: str = ""):
     channels = await db.get_required_channels()
     if channels:
         lines = "\n".join(
-            f"▪️ {ch['title'] or ch['channel_id']}  (`{ch['channel_id']}`)"
+            f"▪️ {html.escape(ch['title'] or ch['channel_id'])}  (<code>{html.escape(ch['channel_id'])}</code>)"
             for ch in channels
         )
-        header = f"📢 **کانال‌های اجباری** ({len(channels)} عدد)\n\n{lines}"
+        header = f"📢 <b>کانال‌های اجباری</b> ({len(channels)} عدد)\n\n{lines}"
     else:
-        header = "📢 **کانال‌های اجباری**\n\nهیچ کانالی تنظیم نشده است."
+        header = "📢 <b>کانال‌های اجباری</b>\n\nهیچ کانالی تنظیم نشده است."
 
     if notice:
         header = f"{notice}\n\n{header}"
 
     await query.edit_message_text(
         header,
-        parse_mode="Markdown",
+        parse_mode="HTML",
         reply_markup=channels_manage(channels),
     )
 
@@ -200,21 +200,21 @@ async def _test_oauth(query):
         test_url = await get_auth_url("__admin_test__")
         db_id = await db.get_app_setting("google_client_id", encrypted=True)
         source = "دیتابیس" if db_id else "فایل .env"
-        short_url = test_url[:60] + "..." if len(test_url) > 60 else test_url
+        short_url = html.escape(test_url[:60] + "..." if len(test_url) > 60 else test_url)
         await query.edit_message_text(
-            "✅ *تست اتصال موفق!*\n\n"
+            "✅ <b>تست اتصال موفق!</b>\n\n"
             f"منبع اعتبارنامه: {source}\n"
-            f"URL تولید شد:\n`{short_url}`\n\n"
+            f"URL تولید شد:\n<code>{short_url}</code>\n\n"
             "اعتبارنامه‌ها به‌درستی پیکربندی شده‌اند.\n"
             "کاربران می‌توانند Drive خود را متصل کنند.",
-            parse_mode="Markdown",
+            parse_mode="HTML",
             reply_markup=back_to_menu(),
         )
     except Exception as e:
         await query.edit_message_text(
-            f"❌ *تست شکست خورد:*\n\n`{e}`\n\n"
+            f"❌ <b>تست شکست خورد:</b>\n\n<code>{html.escape(str(e))}</code>\n\n"
             "Client ID یا Client Secret نامعتبر است.",
-            parse_mode="Markdown",
+            parse_mode="HTML",
             reply_markup=back_to_menu(),
         )
 
@@ -336,9 +336,9 @@ async def handle_admin_add_channel(update: Update, context: ContextTypes.DEFAULT
         channel_id = f"@{chat.username}" if chat.username else str(chat.id)
     except Exception:
         await update.message.reply_text(
-            f"❌ نمی‌توانم کانال `{raw}` را پیدا کنم.\n"
+            f"❌ نمی‌توانم کانال <code>{html.escape(raw)}</code> را پیدا کنم.\n"
             "مطمئن شوید ربات عضو/ادمین کانال است.",
-            parse_mode="Markdown",
+            parse_mode="HTML",
             reply_markup=back_to_menu(),
         )
         return
@@ -349,17 +349,17 @@ async def handle_admin_add_channel(update: Update, context: ContextTypes.DEFAULT
     if added:
         channels = await db.get_required_channels()
         await update.message.reply_text(
-            f"✅ کانال **{title}** (`{channel_id}`) اضافه شد.\n\n"
+            f"✅ کانال <b>{html.escape(title)}</b> (<code>{html.escape(channel_id)}</code>) اضافه شد.\n\n"
             f"📢 اکنون {len(channels)} کانال اجباری دارید.",
-            parse_mode="Markdown",
+            parse_mode="HTML",
             reply_markup=channels_manage(channels),
         )
         # Update title in DB if bot fetched a fresher name
         await db.update_channel_title(channel_id, title)
     else:
         await update.message.reply_text(
-            f"⚠️ کانال `{channel_id}` از قبل در لیست است.",
-            parse_mode="Markdown",
+            f"⚠️ کانال <code>{html.escape(channel_id)}</code> از قبل در لیست است.",
+            parse_mode="HTML",
             reply_markup=back_to_menu(),
         )
 

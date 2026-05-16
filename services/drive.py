@@ -4,8 +4,10 @@ import asyncio
 import ipaddress
 import os
 import re
+import secrets
 import shutil
 import socket
+import string as _string
 import tempfile
 import logging
 from pathlib import Path
@@ -406,3 +408,22 @@ def get_drive_quota(tokens: dict) -> dict:
     svc = build("drive", "v3", credentials=creds, cache_discovery=False)
     result = svc.about().get(fields="storageQuota").execute()
     return result.get("storageQuota", {})
+
+
+# ── Public drive helpers ──────────────────────────────────────
+
+def generate_zip_password(length: int = 12) -> str:
+    alphabet = _string.ascii_letters + _string.digits
+    return "".join(secrets.choice(alphabet) for _ in range(length))
+
+
+def zip_with_password(src_path: Path, dst_path: Path, password: str) -> None:
+    """Create AES-256 encrypted ZIP using pyzipper."""
+    import pyzipper
+    with pyzipper.AESZipFile(
+        dst_path, "w",
+        compression=pyzipper.ZIP_DEFLATED,
+        encryption=pyzipper.WZ_AES,
+    ) as zf:
+        zf.setpassword(password.encode())
+        zf.write(src_path, src_path.name)

@@ -71,12 +71,13 @@ def create_router(get_app: Callable[[], Application | None]) -> APIRouter:
         if not code or not state:
             return HTMLResponse(_ERR.format(msg="پارامترهای نامعتبر."), status_code=400)
 
-        user_id = await db.pop_oauth_state(state)
-        if not user_id:
+        result = await db.pop_oauth_state(state)
+        if not result:
             return HTMLResponse(
                 _ERR.format(msg="Session منقضی شده. دوباره از ربات شروع کنید."),
                 status_code=400,
             )
+        user_id, extra_json = result
 
         try:
             tokens = await exchange_code(code)
@@ -84,18 +85,44 @@ def create_router(get_app: Callable[[], Application | None]) -> APIRouter:
             logger.exception("Token exchange failed")
             return HTMLResponse(_ERR.format(msg=_html.escape(str(e))), status_code=500)
 
-        await db.save_tokens(user_id, tokens)
+        # Check if this OAuth is for a public drive (admin connecting a shared account)
+        is_public_drive = False
+        pub_label = ""
+        if extra_json:
+            import json as _json
+            try:
+                extra = _json.loads(extra_json)
+                is_public_drive = extra.get("is_public_drive", False)
+                pub_label = extra.get("label", "")
+            except Exception:
+                pass
 
         app = get_app()
-        if app:
-            try:
-                await app.bot.send_message(
-                    chat_id=user_id,
-                    text="✅ **اتصال به گوگل درایو موفق!**\n\nحالا می‌توانید فایل‌هایتان را آپلود کنید.",
-                    parse_mode="Markdown",
-                )
-            except Exception:
-                logger.warning("Could not notify user %s", user_id)
+        if is_public_drive:
+            await db.add_public_drive(pub_label, tokens)
+            if app:
+                try:
+                    await app.bot.send_message(
+                        chat_id=user_id,
+                        text=(
+                            f"✅ <b>درایو عمومی «{_html.escape(pub_label)}» متصل شد!</b>\n\n"
+                            "کاربران بدون درایو شخصی می‌توانند از این درایو استفاده کنند."
+                        ),
+                        parse_mode="HTML",
+                    )
+                except Exception:
+                    logger.warning("Could not notify admin %s", user_id)
+        else:
+            await db.save_tokens(user_id, tokens)
+            if app:
+                try:
+                    await app.bot.send_message(
+                        chat_id=user_id,
+                        text="✅ <b>اتصال به گوگل درایو موفق!</b>\n\nحالا می‌توانید فایل‌هایتان را آپلود کنید.",
+                        parse_mode="HTML",
+                    )
+                except Exception:
+                    logger.warning("Could not notify user %s", user_id)
 
         return HTMLResponse(_OK)
 

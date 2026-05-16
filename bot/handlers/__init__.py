@@ -9,6 +9,7 @@ from .start import start_command, check_join_callback
 from .account import account_callback, disconnect_drive_callback
 from .upload import (
     upload_link_callback, upload_file_callback,
+    drive_choice_callback,
     handle_url_message, handle_file_message,
     quality_callback,
 )
@@ -27,10 +28,14 @@ from .admin import (
     handle_admin_search, handle_admin_add_channel,
     handle_admin_set_google_id, handle_admin_set_google_secret,
 )
+from .public_drive_admin import (
+    public_drive_menu_callback, public_drive_callback,
+    handle_admin_public_drive_label,
+)
 from bot.keyboards import main_menu
 from bot.states import (
     IDLE, ADMIN_SET_GOOGLE_ID, ADMIN_SET_GOOGLE_SECRET,
-    ADMIN_TUTORIAL_ADD, ADMIN_SW_ADD,
+    ADMIN_TUTORIAL_ADD, ADMIN_SW_ADD, ADMIN_PUBLIC_DRIVE_LABEL,
 )
 
 _CANCEL_KB = InlineKeyboardMarkup(
@@ -98,6 +103,7 @@ def register(app: Application):
     app.add_handler(CallbackQueryHandler(disconnect_drive_callback,   pattern="^disconnect_drive$"))
     app.add_handler(CallbackQueryHandler(upload_link_callback,        pattern="^upload_link$"))
     app.add_handler(CallbackQueryHandler(upload_file_callback,        pattern="^upload_file$"))
+    app.add_handler(CallbackQueryHandler(drive_choice_callback,       pattern="^drive_choice:"))
     app.add_handler(CallbackQueryHandler(quality_callback,                  pattern="^yt_q:"))
     app.add_handler(CallbackQueryHandler(files_callback,                    pattern="^files:"))
     app.add_handler(CallbackQueryHandler(file_delete_callback,              pattern="^file:del:"))
@@ -114,6 +120,9 @@ def register(app: Application):
     app.add_handler(CallbackQueryHandler(software_admin_platform_callback,  pattern="^sw:admin:platform:"))
     app.add_handler(CallbackQueryHandler(software_admin_add_callback,       pattern="^sw:admin:add:"))
     app.add_handler(CallbackQueryHandler(software_del_callback,             pattern="^sw:admin:del:"))
+    # Public drives admin
+    app.add_handler(CallbackQueryHandler(public_drive_menu_callback,        pattern="^pubdrv:menu$"))
+    app.add_handler(CallbackQueryHandler(public_drive_callback,             pattern="^pubdrv:"))
     # Admin (generic — must come last)
     app.add_handler(CallbackQueryHandler(admin_callback,                    pattern="^admin:"))
 
@@ -143,6 +152,8 @@ async def _route_text(update, context):
         await handle_admin_set_google_id(update, context)
     elif state == ADMIN_SET_GOOGLE_SECRET:
         await handle_admin_set_google_secret(update, context)
+    elif state == ADMIN_PUBLIC_DRIVE_LABEL:
+        await handle_admin_public_drive_label(update, context)
 
 
 async def _route_media(update, context):

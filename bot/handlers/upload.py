@@ -9,8 +9,9 @@ from telegram import Update
 from telegram.ext import ContextTypes
 
 import database.db as db
-from bot.keyboards import main_menu, cancel_and_menu, connect_drive, quality_kb
+from bot.keyboards import main_menu, cancel_and_menu, connect_drive, quality_kb, drive_choice_kb
 from bot.states import IDLE, WAIT_URL, WAIT_FILE
+from config import PUBLIC_DRIVE_MAX_MB
 from bot.rate_limiter import limiter
 from services.auth import get_auth_url, has_oauth_config
 from services.drive import get_youtube_info, is_youtube_url
@@ -60,14 +61,42 @@ async def _guard(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
     return True
 
 
-async def _ensure_oauth(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
-    """If user has no Drive token, send auth link and return False."""
+async def _ensure_oauth(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    upload_type: str = "link",
+) -> bool:
+    """If user has no Drive token, show options (public drive or personal). Returns True to proceed."""
     user_id = update.effective_user.id
     if await db.has_tokens(user_id):
         return True
 
+    query = update.callback_query
+
+    # Check if public drive feature is enabled and has active drives
+    pub_enabled = await db.is_public_drive_enabled()
+    if pub_enabled:
+        active_drives = await db.get_active_public_drives()
+        if active_drives:
+            text = (
+                "☁️ <b>برای آپلود نیاز به گوگل درایو دارید</b>\n\n"
+                "کدام گزینه را ترجیح می‌دهید؟\n\n"
+                f"• <b>درایو شخصی:</b> فضای نامحدود، فایل در Drive خودتان\n"
+                f"• <b>درایو عمومی:</b> رایگان، سقف {PUBLIC_DRIVE_MAX_MB // 1024} گیگابایت، "
+                "فایل زیپ‌شده با رمز عبور تحویل داده می‌شود"
+            )
+            if query:
+                await query.edit_message_text(
+                    text, parse_mode="HTML", reply_markup=drive_choice_kb(upload_type)
+                )
+            else:
+                await update.message.reply_text(
+                    text, parse_mode="HTML", reply_markup=drive_choice_kb(upload_type)
+                )
+            return False
+
+    # No public drive available — show personal OAuth only
     if not await has_oauth_config():
-        query = update.callback_query
         txt = (
             "⚠️ اتصال به گوگل درایو هنوز تنظیم نشده است.\n\n"
             "ادمین باید ابتدا Client ID و Client Secret گوگل را از پنل ادمین وارد کند."
@@ -82,7 +111,6 @@ async def _ensure_oauth(update: Update, context: ContextTypes.DEFAULT_TYPE) -> b
     await db.save_oauth_state(state, user_id)
     auth_url = await get_auth_url(state)
 
-    query = update.callback_query
     text = (
         "☁️ اتصال به گوگل درایو\n\n"
         "برای آپلود، ابتدا حساب گوگل خود را متصل کنید.\n"
@@ -97,15 +125,63 @@ async def _ensure_oauth(update: Update, context: ContextTypes.DEFAULT_TYPE) -> b
 
 # ── Upload via link ───────────────────────────────────────────
 
+async def drive_choice_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """User picked 'personal drive' or 'public drive' from the choice keyboard."""
+    query = update.callback_query
+    await query.answer()
+
+    _, choice, upload_type = query.data.split(":", 2)  # drive_choice:public:link
+
+    if choice == "public":
+        context.user_data["use_public_drive"] = True
+        if upload_type == "link":
+            context.user_data["state"] = WAIT_URL
+            await query.edit_message_text(
+                f"🔗 <b>آپلود با لینک</b> (درایو عمومی)\n\n"
+                f"لینک فایل یا ویدیو یوتیوب را ارسال کنید:\n"
+                f"(حداکثر حجم: {PUBLIC_DRIVE_MAX_MB // 1024} گیگابایت)",
+                parse_mode="HTML",
+                reply_markup=cancel_and_menu(),
+            )
+        else:
+            context.user_data["state"] = WAIT_FILE
+            await query.edit_message_text(
+                f"📤 <b>آپلود فایل</b> (درایو عمومی)\n\n"
+                f"فایل، عکس یا ویدیو خود را ارسال کنید.\n"
+                f"(حداکثر حجم: {PUBLIC_DRIVE_MAX_MB // 1024} گیگابایت)",
+                parse_mode="HTML",
+                reply_markup=cancel_and_menu(),
+            )
+
+    elif choice == "personal":
+        context.user_data["use_public_drive"] = False
+        if not await has_oauth_config():
+            await query.edit_message_text(
+                "⚠️ اتصال به گوگل درایو هنوز تنظیم نشده است.",
+                reply_markup=main_menu(),
+            )
+            return
+        user_id = update.effective_user.id
+        state = secrets.token_urlsafe(32)
+        await db.save_oauth_state(state, user_id)
+        auth_url = await get_auth_url(state)
+        await query.edit_message_text(
+            "☁️ اتصال به گوگل درایو\n\n"
+            "روی دکمه زیر کلیک کنید و پس از تأیید به ربات برگردید:",
+            reply_markup=connect_drive(auth_url),
+        )
+
+
 async def upload_link_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
 
     if not await _guard(update, context):
         return
-    if not await _ensure_oauth(update, context):
+    if not await _ensure_oauth(update, context, "link"):
         return
 
+    context.user_data["use_public_drive"] = False
     context.user_data["state"] = WAIT_URL
     await query.edit_message_text(
         f"🔗 آپلود با لینک\n\n"
@@ -135,11 +211,15 @@ async def handle_url_message(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return
 
     user_id = update.effective_user.id
-    tokens = await db.get_tokens(user_id)
-    if not tokens:
-        await _ensure_oauth(update, context)
-        context.user_data["state"] = IDLE
-        return
+    use_public_drive = context.user_data.pop("use_public_drive", False)
+    tokens = None
+
+    if not use_public_drive:
+        tokens = await db.get_tokens(user_id)
+        if not tokens:
+            await _ensure_oauth(update, context, "link")
+            context.user_data["state"] = IDLE
+            return
 
     context.user_data["state"] = IDLE
     url = urls[0]
@@ -156,17 +236,19 @@ async def handle_url_message(update: Update, context: ContextTypes.DEFAULT_TYPE)
             )
             return
 
-        # Store pending data server-side (user_data is per-user in-memory)
         context.user_data["yt_url"] = url
         context.user_data["yt_qualities"] = info["qualities"]
         context.user_data["yt_tokens"] = tokens
+        context.user_data["yt_use_public"] = use_public_drive
 
         title = info["title"][:60] + ("..." if len(info["title"]) > 60 else "")
+        pub_note = f"\n☁️ <i>درایو عمومی — سقف {PUBLIC_DRIVE_MAX_MB // 1024} GB</i>" if use_public_drive else ""
         await msg.edit_text(
-            f"🎬 ویدیو یافت شد!\n\n"
+            f"🎬 ویدیو یافت شد!{pub_note}\n\n"
             f"📌 {title}\n"
             f"⏱ مدت: {info['duration']}\n\n"
             "کیفیت دانلود را انتخاب کنید:",
+            parse_mode="HTML",
             reply_markup=quality_kb(info["qualities"]),
         )
         return
@@ -181,7 +263,8 @@ async def handle_url_message(update: Update, context: ContextTypes.DEFAULT_TYPE)
         status_msg_id=status_msg.message_id,
         upload_type="link",
         source=url,
-        tokens=tokens,
+        tokens=tokens or {},
+        use_public_drive=use_public_drive,
     )
 
     try:
@@ -209,8 +292,9 @@ async def quality_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     qualities: list | None = context.user_data.get("yt_qualities")
     url: str | None = context.user_data.get("yt_url")
     tokens: dict | None = context.user_data.get("yt_tokens")
+    use_public_drive: bool = context.user_data.get("yt_use_public", False)
 
-    if not qualities or not url or not tokens:
+    if not qualities or not url or (not tokens and not use_public_drive):
         await query.edit_message_text(
             "❌ اطلاعات منقضی شده. لطفاً لینک را دوباره ارسال کنید.",
             reply_markup=main_menu(),
@@ -229,10 +313,10 @@ async def quality_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     selected = qualities[idx]
 
-    # Clear pending data
     context.user_data.pop("yt_qualities", None)
     context.user_data.pop("yt_url", None)
     context.user_data.pop("yt_tokens", None)
+    context.user_data.pop("yt_use_public", None)
 
     if not await _guard(update, context):
         return
@@ -246,8 +330,9 @@ async def quality_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         status_msg_id=query.message.message_id,
         upload_type="link",
         source=url,
-        tokens=tokens,
+        tokens=tokens or {},
         yt_format=selected["format"],
+        use_public_drive=use_public_drive,
     )
 
     try:
@@ -273,9 +358,10 @@ async def upload_file_callback(update: Update, context: ContextTypes.DEFAULT_TYP
 
     if not await _guard(update, context):
         return
-    if not await _ensure_oauth(update, context):
+    if not await _ensure_oauth(update, context, "file"):
         return
 
+    context.user_data["use_public_drive"] = False
     context.user_data["state"] = WAIT_FILE
     await query.edit_message_text(
         f"📤 آپلود فایل\n\n"
@@ -340,22 +426,37 @@ async def handle_file_message(update: Update, context: ContextTypes.DEFAULT_TYPE
         return
 
     user_id = update.effective_user.id
-    tokens = await db.get_tokens(user_id)
-    if not tokens:
-        await _ensure_oauth(update, context)
-        context.user_data["state"] = IDLE
-        return
+    use_public_drive = context.user_data.pop("use_public_drive", False)
+    tokens = None
 
-    # Check size (Telegram gives us file_size for files < 20 MB; for larger it may be 0)
-    max_bytes = MAX_FILE_SIZE_MB * 1024 * 1024
-    if file_size and file_size > max_bytes:
-        await msg.reply_text(
-            f"❌ حجم فایل ({file_size / 1024**3:.2f} GB) بیشتر از حداکثر مجاز است.\n"
-            "برای فایل‌های بزرگ از گزینه «آپلود با لینک» استفاده کنید.",
-            reply_markup=main_menu(),
-        )
-        context.user_data["state"] = IDLE
-        return
+    if not use_public_drive:
+        tokens = await db.get_tokens(user_id)
+        if not tokens:
+            await _ensure_oauth(update, context, "file")
+            context.user_data["state"] = IDLE
+            return
+
+    # Check size limits
+    if use_public_drive:
+        max_bytes = PUBLIC_DRIVE_MAX_MB * 1024 * 1024
+        if file_size and file_size > max_bytes:
+            await msg.reply_text(
+                f"❌ حجم فایل ({file_size / 1024**2:.0f} MB) از سقف درایو عمومی "
+                f"({PUBLIC_DRIVE_MAX_MB // 1024} GB) بیشتر است.",
+                reply_markup=main_menu(),
+            )
+            context.user_data["state"] = IDLE
+            return
+    else:
+        max_bytes = MAX_FILE_SIZE_MB * 1024 * 1024
+        if file_size and file_size > max_bytes:
+            await msg.reply_text(
+                f"❌ حجم فایل ({file_size / 1024**3:.2f} GB) بیشتر از حداکثر مجاز است.\n"
+                "برای فایل‌های بزرگ از گزینه «آپلود با لینک» استفاده کنید.",
+                reply_markup=main_menu(),
+            )
+            context.user_data["state"] = IDLE
+            return
 
     # Get Telegram download URL
     tg_file = await context.bot.get_file(file_obj.file_id)
@@ -374,7 +475,8 @@ async def handle_file_message(update: Update, context: ContextTypes.DEFAULT_TYPE
         filename=filename,
         mime_type=mime_type,
         file_size=file_size,
-        tokens=tokens,
+        tokens=tokens or {},
+        use_public_drive=use_public_drive,
     )
 
     try:

@@ -93,6 +93,7 @@ def admin_menu() -> Markup:
             Btn("📚 مدیریت آموزش", callback_data="tutorial:admin"),
             Btn("📥 مدیریت نرم‌افزار", callback_data="sw:admin"),
         ],
+        [Btn("🌐 درایوهای عمومی", callback_data="pubdrv:menu")],
         [Btn("📊 آمار کلی", callback_data="admin:stats")],
         [Btn("🏠 منوی اصلی", callback_data="main_menu")],
     ])
@@ -210,3 +211,29 @@ def connect_drive(auth_url: str) -> Markup:
         [Btn("🔗 اتصال به گوگل درایو", url=auth_url)],
         [Btn("❌ انصراف", callback_data="main_menu")],
     ])
+
+
+def drive_choice_kb(upload_type: str) -> Markup:
+    """Shown when user has no personal drive but public drive is available."""
+    return Markup([
+        [Btn("☁️ استفاده از درایو عمومی (رایگان)", callback_data=f"drive_choice:public:{upload_type}")],
+        [Btn("🔗 اتصال گوگل درایو شخصی", callback_data=f"drive_choice:personal:{upload_type}")],
+        [Btn("❌ انصراف", callback_data="main_menu")],
+    ])
+
+
+def public_drives_admin_kb(drives: list[dict], enabled: bool) -> Markup:
+    toggle_label = "🔴 غیرفعال کردن ویژگی" if enabled else "🟢 فعال کردن ویژگی"
+    rows = [
+        [Btn(toggle_label, callback_data="pubdrv:toggle")],
+        [Btn("➕ اتصال درایو عمومی جدید", callback_data="pubdrv:add")],
+    ]
+    for d in drives:
+        status = "✅" if d["is_active"] else "⏸"
+        label = (d["label"] or f"Drive #{d['id']}")[:25]
+        rows.append([
+            Btn(f"{status} {label}", callback_data=f"pubdrv:toggle_drive:{d['id']}"),
+            Btn("🗑", callback_data=f"pubdrv:del:{d['id']}"),
+        ])
+    rows.append([Btn("🔙 بازگشت به پنل ادمین", callback_data="admin:menu")])
+    return Markup(rows)

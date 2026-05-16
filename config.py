@@ -20,7 +20,8 @@ DATABASE_PATH = os.getenv("DATABASE_PATH", "bot.db")
 ENCRYPTION_KEY = os.getenv("ENCRYPTION_KEY", "")
 
 # ── Upload limits ─────────────────────────────────────────────
-MAX_FILE_SIZE_MB = int(os.getenv("MAX_FILE_SIZE_MB", "4096"))   # 4 GB
+MAX_FILE_SIZE_MB = int(os.getenv("MAX_FILE_SIZE_MB", "4096"))         # 4 GB
+PUBLIC_DRIVE_MAX_MB = int(os.getenv("PUBLIC_DRIVE_MAX_MB", "1024"))   # 1 GB cap for public drives
 DAILY_UPLOAD_LIMIT = int(os.getenv("DAILY_UPLOAD_LIMIT", "5"))
 MAX_CONCURRENT_UPLOADS = int(os.getenv("MAX_CONCURRENT_UPLOADS", "3"))
 MAX_QUEUE_SIZE = int(os.getenv("MAX_QUEUE_SIZE", "50"))

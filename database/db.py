@@ -53,7 +53,16 @@ async def init_db():
             CREATE TABLE IF NOT EXISTS oauth_states (
                 state       TEXT      PRIMARY KEY,
                 user_id     INTEGER   NOT NULL,
+                extra       TEXT      DEFAULT NULL,
                 created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE IF NOT EXISTS public_drives (
+                id               INTEGER   PRIMARY KEY AUTOINCREMENT,
+                label            TEXT      NOT NULL DEFAULT '',
+                tokens_encrypted TEXT      NOT NULL,
+                is_active        INTEGER   NOT NULL DEFAULT 1,
+                added_at         TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
 
             CREATE TABLE IF NOT EXISTS required_channels (
@@ -90,6 +99,16 @@ async def init_db():
                 created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
         """)
+
+        # Migrations for existing databases
+        for migration in [
+            "ALTER TABLE oauth_states ADD COLUMN extra TEXT DEFAULT NULL",
+        ]:
+            try:
+                await db.execute(migration)
+                await db.commit()
+            except Exception:
+                pass  # Column already exists
 
         # Purge stale OAuth states
         await db.execute("DELETE FROM oauth_states WHERE created_at < datetime('now', '-15 minutes')")
@@ -292,20 +311,21 @@ async def has_tokens(user_id: int) -> bool:
 
 # ── OAuth states ──────────────────────────────────────────────
 
-async def save_oauth_state(state: str, user_id: int):
+async def save_oauth_state(state: str, user_id: int, extra: Optional[str] = None):
     async with aiosqlite.connect(DATABASE_PATH) as db:
         await db.execute(
-            "INSERT INTO oauth_states (state, user_id) VALUES (?,?)", (state, user_id)
+            "INSERT INTO oauth_states (state, user_id, extra) VALUES (?,?,?)",
+            (state, user_id, extra),
         )
         await db.commit()
 
 
-async def pop_oauth_state(state: str) -> Optional[int]:
-    """Returns user_id and deletes the state atomically (EXCLUSIVE lock to prevent TOCTOU)."""
+async def pop_oauth_state(state: str) -> Optional[tuple[int, Optional[str]]]:
+    """Returns (user_id, extra) and deletes the state atomically."""
     async with aiosqlite.connect(DATABASE_PATH) as db:
         await db.execute("BEGIN EXCLUSIVE")
         async with db.execute(
-            "SELECT user_id FROM oauth_states WHERE state=?", (state,)
+            "SELECT user_id, extra FROM oauth_states WHERE state=?", (state,)
         ) as cur:
             row = await cur.fetchone()
         if not row:
@@ -313,7 +333,7 @@ async def pop_oauth_state(state: str) -> Optional[int]:
             return None
         await db.execute("DELETE FROM oauth_states WHERE state=?", (state,))
         await db.commit()
-        return row[0]
+        return row[0], row[1]
 
 
 # ── Required channels ─────────────────────────────────────────
@@ -503,3 +523,80 @@ async def delete_software_file(file_db_id: int):
     async with aiosqlite.connect(DATABASE_PATH) as db:
         await db.execute("DELETE FROM software_files WHERE id=?", (file_db_id,))
         await db.commit()
+
+
+# ── Public drives ─────────────────────────────────────────────
+
+async def add_public_drive(label: str, tokens: dict) -> int:
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        cur = await db.execute(
+            "INSERT INTO public_drives (label, tokens_encrypted) VALUES (?,?)",
+            (label, encrypt(tokens)),
+        )
+        await db.commit()
+        return cur.lastrowid
+
+
+async def get_public_drives() -> list[dict]:
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT id, label, is_active, added_at, tokens_encrypted FROM public_drives ORDER BY id"
+        ) as cur:
+            rows = await cur.fetchall()
+    result = []
+    for r in rows:
+        d = dict(r)
+        try:
+            d["tokens"] = decrypt(d.pop("tokens_encrypted"))
+        except Exception:
+            d["tokens"] = {}
+        result.append(d)
+    return result
+
+
+async def get_active_public_drives() -> list[dict]:
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT id, label, is_active, tokens_encrypted FROM public_drives WHERE is_active=1 ORDER BY id"
+        ) as cur:
+            rows = await cur.fetchall()
+    result = []
+    for r in rows:
+        d = dict(r)
+        try:
+            d["tokens"] = decrypt(d.pop("tokens_encrypted"))
+        except Exception:
+            d["tokens"] = {}
+        result.append(d)
+    return result
+
+
+async def delete_public_drive(drive_id: int):
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        await db.execute("DELETE FROM public_drives WHERE id=?", (drive_id,))
+        await db.commit()
+
+
+async def toggle_public_drive(drive_id: int, active: bool):
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        await db.execute(
+            "UPDATE public_drives SET is_active=? WHERE id=?",
+            (1 if active else 0, drive_id),
+        )
+        await db.commit()
+
+
+async def update_public_drive_tokens(drive_id: int, tokens: dict):
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        await db.execute(
+            "UPDATE public_drives SET tokens_encrypted=? WHERE id=?",
+            (encrypt(tokens), drive_id),
+        )
+        await db.commit()
+
+
+async def is_public_drive_enabled() -> bool:
+    val = await get_app_setting("public_drive_enabled")
+    return val == "1"

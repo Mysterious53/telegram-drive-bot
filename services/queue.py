@@ -14,10 +14,11 @@ import database.db as db
 from services.drive import (
     download_url, download_telegram_file, download_youtube, upload_file,
     is_youtube_url, FileTooLargeError, UploadCancelled,
+    get_drive_quota, generate_zip_password, zip_with_password,
 )
 
 _DEFAULT_YT_FORMAT = "best[ext=mp4]/bestvideo[ext=mp4]+bestaudio[ext=m4a]/best"
-from config import MAX_CONCURRENT_UPLOADS, MAX_QUEUE_SIZE, DAILY_UPLOAD_LIMIT
+from config import MAX_CONCURRENT_UPLOADS, MAX_QUEUE_SIZE, DAILY_UPLOAD_LIMIT, PUBLIC_DRIVE_MAX_MB
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +39,8 @@ class UploadTask:
     file_size: int = 0
     tokens: dict = field(default_factory=dict)
     cancelled: bool = False
-    yt_format: str = ""          # yt-dlp format selector (empty = default)
+    yt_format: str = ""
+    use_public_drive: bool = False
 
 
 class QueueFullError(Exception):
@@ -147,12 +149,17 @@ class UploadQueue:
             await status(f"❌ محدودیت روزانه ({DAILY_UPLOAD_LIMIT} فایل) پر شده است.\nفردا دوباره امتحان کنید.")
             return
 
-        tokens = await db.get_tokens(task.user_id)
-        if not tokens:
-            await status("❌ اتصال به گوگل درایو قطع شده. لطفاً /start بزنید و دوباره وصل شوید.")
-            return
+        # For personal drive, verify token still exists
+        if not task.use_public_drive:
+            tokens = await db.get_tokens(task.user_id)
+            if not tokens:
+                await status("❌ اتصال به گوگل درایو قطع شده. لطفاً /start بزنید و دوباره وصل شوید.")
+                return
+        else:
+            tokens = None
 
         tmp_path: Path | None = None
+        zip_path: Path | None = None
         try:
             # ── Download ──────────────────────────────────────
             if task.upload_type == "link":
@@ -184,7 +191,99 @@ class UploadQueue:
             if task.cancelled:
                 raise UploadCancelled()
 
-            # ── Upload — async monitor reads sync progress ────
+            # ── Public drive path ─────────────────────────────
+            if task.use_public_drive:
+                max_pub = PUBLIC_DRIVE_MAX_MB * 1024 * 1024
+                if size > max_pub:
+                    await status(
+                        f"❌ حجم فایل ({size / 1024**2:.0f} MB) از سقف درایو عمومی "
+                        f"({PUBLIC_DRIVE_MAX_MB // 1024} GB) بیشتر است."
+                    )
+                    return
+
+                await status("🔒 در حال رمزنگاری فایل...", markup=_CANCEL_KB)
+                password = generate_zip_password()
+                zip_path = tmp_path.with_suffix(tmp_path.suffix + ".zip")
+                await loop.run_in_executor(None, zip_with_password, tmp_path, zip_path, password)
+
+                # Clean original now — only zip needed from here
+                try:
+                    os.unlink(tmp_path)
+                except Exception:
+                    pass
+                tmp_path = None
+
+                drives = await db.get_active_public_drives()
+                if not drives:
+                    await status("❌ هیچ درایو عمومی فعالی موجود نیست. با ادمین تماس بگیرید.")
+                    return
+
+                # Sort by free space (most free first)
+                drive_spaces: list[tuple[int, dict]] = []
+                for d in drives:
+                    try:
+                        quota = await loop.run_in_executor(None, get_drive_quota, d["tokens"])
+                        limit = int(quota.get("limit", 0))
+                        used_bytes = int(quota.get("usageInDrive", 0))
+                        free = limit - used_bytes if limit > 0 else 10 ** 18
+                    except Exception:
+                        free = 0
+                    drive_spaces.append((free, d))
+                drive_spaces.sort(key=lambda x: x[0], reverse=True)
+
+                zip_filename = filename + ".zip"
+                await status(f"⬆️ در حال آپلود به درایو عمومی...\n📁 {zip_filename}", markup=_CANCEL_KB)
+
+                file_meta = None
+                for _, drive in drive_spaces:
+                    try:
+                        file_meta, upd_tok = await loop.run_in_executor(
+                            None,
+                            lambda t=drive["tokens"]: upload_file(
+                                t, zip_path, zip_filename, "application/zip",
+                                cancelled_check=lambda: task.cancelled,
+                            ),
+                        )
+                        if upd_tok.get("token") != drive["tokens"].get("token"):
+                            await db.update_public_drive_tokens(drive["id"], upd_tok)
+                        break
+                    except UploadCancelled:
+                        raise
+                    except Exception as e:
+                        logger.warning("Public drive %d failed: %s", drive["id"], e)
+                        continue
+
+                if not file_meta:
+                    raise RuntimeError("همه درایوهای عمومی ناموفق بودند. لطفاً بعداً امتحان کنید.")
+
+                await db.increment_daily(task.user_id)
+                await db.record_upload(
+                    task.user_id, zip_filename, size, task.upload_type,
+                    file_meta["id"], file_meta["webViewLink"], file_meta["webContentLink"],
+                )
+
+                remaining = DAILY_UPLOAD_LIMIT - used - 1
+                view_link = file_meta["webViewLink"]
+                dl_link = file_meta["webContentLink"]
+                await status(
+                    f"✅ <b>آپلود موفق!</b> (درایو عمومی)\n\n"
+                    f"📁 نام فایل: <code>{_html.escape(filename)}</code>\n"
+                    f"📦 حجم: {size / 1024 / 1024:.2f} MB\n\n"
+                    f'🔗 <a href="{view_link}">مشاهده در گوگل درایو</a>\n'
+                    f'⬇️ <a href="{dl_link}">دانلود مستقیم</a>\n\n'
+                    f"🔐 <b>رمز عبور فایل زیپ:</b>\n<code>{_html.escape(password)}</code>\n\n"
+                    "📦 <b>نحوه استخراج:</b>\n"
+                    "• <b>ویندوز:</b> راست‌کلیک ← Extract with 7-Zip یا WinRAR\n"
+                    "• <b>مک / لینوکس:</b>\n"
+                    f"  <code>unzip -P {_html.escape(password)} «نام‌فایل».zip</code>\n"
+                    "• <b>اندروید:</b> اپ ZArchiver یا WinZip\n\n"
+                    "⚠️ <i>فایل به دلیل امنیت درایو عمومی به‌صورت زیپ رمزدار تحویل داده شد.</i>\n"
+                    f"📊 آپلودهای باقی‌مانده امروز: {remaining}",
+                    parse_mode="HTML",
+                )
+                return
+
+            # ── Personal drive path ───────────────────────────
             _upload_pct = [0]
 
             def _sync_progress(uploaded: int, total: int):
@@ -261,8 +360,9 @@ class UploadQueue:
             logger.exception("Upload failed for user %s", task.user_id)
             await status(f"❌ خطا در آپلود:\n{_html.escape(str(e))}", parse_mode="HTML")
         finally:
-            if tmp_path and tmp_path.exists():
-                try:
-                    os.unlink(tmp_path)
-                except Exception:
-                    pass
+            for p in (tmp_path, zip_path):
+                if p and p.exists():
+                    try:
+                        os.unlink(p)
+                    except Exception:
+                        pass

@@ -89,7 +89,16 @@ _env_set() {
 
 # ── پیش‌نیازهای پایه ─────────────────────────────────────────
 info "نصب پیش‌نیازها..."
-case "${ID:-}" in ubuntu|debian) apt-get update -qq >/dev/null 2>&1 || true ;; esac
+case "${ID:-}" in
+  ubuntu|debian)
+    # اگر dpkg قبلاً قطع شده، ابتدا آن را تعمیر می‌کنیم
+    if dpkg --audit 2>/dev/null | grep -q .; then
+      info "تعمیر dpkg قطع‌شده..."
+      dpkg --configure -a 2>/dev/null || true
+    fi
+    apt-get update -qq >/dev/null 2>&1 || true
+    ;;
+esac
 pkg_install python3 python3-pip python3-venv git curl openssl || \
   die "نصب پیش‌نیازها شکست خورد."
 # ffmpeg برای ترکیب ویدیو+صدا در آپلود یوتیوب
